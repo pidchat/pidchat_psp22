@@ -1,0 +1,7 @@
+{
+    "projectFiles": ["contracts/psp22/**/*"],
+    "typechainGeneratedPath": "types",
+    "isWorkspace": true,
+    "workspacePath": "./"
+  }
+  
