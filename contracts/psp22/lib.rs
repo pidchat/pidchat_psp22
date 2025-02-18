@@ -87,12 +87,16 @@ pub mod token {
         DefaultBalance,
         PSP22Error,
     };
+    use ink::codegen::{
+        EmitEvent,
+        Env,
+    };
     use ink_storage::Mapping;
     use ink::prelude::vec::Vec;
     use ink::prelude::string::String;
     use ink::prelude::string::ToString;
     #[ink(storage)]
-    #[derive(Debug, Default)]
+    #[derive(Default)]
     pub struct PidChatPSP22 {
         name: Option<String>,
         symbol: Option<String>,
@@ -102,6 +106,27 @@ pub mod token {
         total_supply: DefaultBalance,
         transfers: Mapping<DefaultAccountId, Vec<(DefaultAccountId, DefaultAccountId, DefaultBalance,u64)>>,
     }
+
+    // Define the Transfer event
+    #[ink(event)]
+    pub struct Transfer {
+        #[ink(topic)]
+        from: Option<AccountId>,
+        #[ink(topic)]
+        to: Option<AccountId>,
+        value: Balance,
+    }
+
+    // Define the Approval event
+    #[ink(event)]
+    pub struct Approval {
+        #[ink(topic)]
+        owner: AccountId,
+        #[ink(topic)]
+        spender: AccountId,
+        value: Balance,
+    }
+
     impl  PidChatPSP22 {
         #[ink(constructor)]
         pub fn new(
@@ -128,12 +153,22 @@ pub mod token {
             // Record transfer in sender's history
             let transfer_from = (from, to, value, timestamp);
             let mut transfers_from = self.transfers.get(&from).unwrap_or_default();
+            // Remove the oldest transfer if the history is full
+            if transfers_from.len() >= 100 {
+                // Remove first transfer or oldest transfer
+                transfers_from.remove(0);
+            }
             transfers_from.push(transfer_from);
             self.transfers.insert(&from, &transfers_from);
             
             // Record transfer in recipient's history
             let transfer_to = (from, to, value, timestamp);
             let mut transfers_to = self.transfers.get(&to).unwrap_or_default();
+            // Remove the oldest transfer if the history is full
+            if transfers_to.len() >= 100 {
+                // Remove first transfer or oldest transfer
+                transfers_to.remove(0);
+            }
             transfers_to.push(transfer_to);
             self.transfers.insert(&to, &transfers_to);
         }
@@ -148,6 +183,27 @@ pub mod token {
             self.balances.insert(&from, &(from_balance - value));
             self.balances.insert(&to, &(self.balances.get(&to).unwrap_or(0) + value));
             Ok(())
+        }
+        // Helper function to emit transfer events
+        fn _emit_transfer_event(
+            &self,
+            from: Option<AccountId>,
+            to: Option<AccountId>,
+            amount: Balance,
+        ) {
+            self.env().emit_event(Transfer {
+                from,
+                to,
+                value: amount,
+            });
+        }
+        // Helper function to emit approval events
+        fn _emit_approval_event(&self, owner: AccountId, spender: AccountId, amount: Balance) {
+            self.env().emit_event(Approval {
+                owner,
+                spender,
+                value: amount,
+            });
         }
        
     }
@@ -189,6 +245,8 @@ pub mod token {
             self.update_balances(caller, to, value)?;
             // Record transfer using helper function
             self.record_transfer(caller, to, value);
+            // Emit transfer event using helper function
+            self._emit_transfer_event(Some(caller), Some(to), value);
             Ok(())
         }
 
@@ -208,6 +266,8 @@ pub mod token {
             self.allowances.remove(&(from, caller));
             // Record transfer using helper function
             self.record_transfer(from, to, value);
+            // Emit transfer event using helper function
+            self._emit_transfer_event(Some(from), Some(to), value);
             Ok(())
              
         }
@@ -272,5 +332,200 @@ pub mod token {
             transfers[start..end].to_vec()
         }
         
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;    
+
+        use ink::env::test::{default_accounts, set_caller}; 
+        use ink::env::DefaultEnvironment;
+        use crate::Environment;
+        type Balance = <DefaultEnvironment as Environment>::Balance;
+
+        // Helper function to setup test environment
+        fn setup() -> PidChatPSP22 {        
+            let total_supply: Balance = 1_000_000;
+            PidChatPSP22::new(
+                total_supply,
+                Some("TestToken".to_string()),
+                Some("TST".to_string()),
+                18,
+            )
+        }
+
+        // Test basic token information
+        #[ink::test]
+        fn test_token_info() {
+            let contract = setup();
+            
+            assert_eq!(contract.token_name(), "TestToken".as_bytes().to_vec());
+            assert_eq!(contract.token_symbol(), "TST".as_bytes().to_vec());
+            assert_eq!(contract.token_decimals(), 18);
+            assert_eq!(contract.total_supply(), 1_000_000);
+        }
+
+        // Test initial balance
+        #[ink::test]
+        fn test_initial_balance() {
+            let contract = setup();
+            let accounts = default_accounts::<DefaultEnvironment>();
+            
+            assert_eq!(contract.balance_of(accounts.alice), 1_000_000);
+            assert_eq!(contract.balance_of(accounts.bob), 0);
+        }
+
+        // Test transfer
+        #[ink::test]
+        fn test_transfer() {
+            let mut contract = setup();
+            let accounts = default_accounts::<DefaultEnvironment>();
+            
+            // Transfer 100 tokens from Alice to Bob
+            assert!(contract.transfer(accounts.bob, 100).is_ok());
+            
+            // Check balances after transfer
+            assert_eq!(contract.balance_of(accounts.alice), 1_000_000 - 100);
+            assert_eq!(contract.balance_of(accounts.bob), 100);
+        }
+
+        // Test transfer with insufficient balance
+        #[ink::test]
+        fn test_transfer_insufficient_balance() {
+            let mut contract = setup();
+            let accounts = default_accounts::<DefaultEnvironment>();
+            
+            // Try to transfer more than available balance
+            let result = contract.transfer(accounts.bob, 2_000_000);
+            assert_eq!(result, Err(PSP22Error::InsufficientBalance));
+        }
+
+        // Test approve and allowance
+        #[ink::test]
+        fn test_approve_and_allowance() {
+            let mut contract = setup();
+            let accounts = default_accounts::<DefaultEnvironment>();
+            
+            // Approve Bob to spend 500 tokens
+            assert!(contract.approve(accounts.bob, 500).is_ok());
+            
+            // Check allowance
+            assert_eq!(contract.allowance(accounts.alice, accounts.bob), 500);
+        }
+
+        // Test transfer_from
+        #[ink::test]
+        fn test_transfer_from() {
+            let mut contract = setup();
+            let accounts = default_accounts::<DefaultEnvironment>();
+            
+            // Alice approves Bob to spend 500 tokens
+            assert!(contract.approve(accounts.bob, 500).is_ok());
+            
+            // Bob transfers 300 tokens from Alice to Charlie
+            set_caller::<DefaultEnvironment>(accounts.bob);
+            assert!(contract.transfer_from(accounts.alice, accounts.charlie, 300).is_ok());
+            
+            // Check balances
+            assert_eq!(contract.balance_of(accounts.alice), 1_000_000 - 300);
+            assert_eq!(contract.balance_of(accounts.charlie), 300);
+            assert_eq!(contract.allowance(accounts.alice, accounts.bob), 0);
+        }
+
+        // Test increase/decrease allowance
+        #[ink::test]
+        fn test_allowance_modifications() {
+            let mut contract = setup();
+            let accounts = default_accounts::<DefaultEnvironment>();
+            
+            // Initial approve
+            assert!(contract.approve(accounts.bob, 500).is_ok());
+            
+            // Increase allowance
+            assert!(contract.increase_allowance(accounts.bob, 200).is_ok());
+            assert_eq!(contract.allowance(accounts.alice, accounts.bob), 700);
+            
+            // Decrease allowance
+            assert!(contract.decrease_allowance(accounts.bob, 300).is_ok());
+            assert_eq!(contract.allowance(accounts.alice, accounts.bob), 400);
+        }
+
+        // Test burn
+        #[ink::test]
+        fn test_burn() {
+            let mut contract = setup();
+            let accounts = default_accounts::<DefaultEnvironment>();
+            
+            // Burn 100 tokens
+            assert!(contract.burn(accounts.alice, 100).is_ok());
+            
+            // Check balance and total supply
+            assert_eq!(contract.balance_of(accounts.alice), 1_000_000 - 100);
+            assert_eq!(contract.total_supply(), 1_000_000 - 100);
+        }
+
+        // Test transfer history
+        #[ink::test]
+        fn test_transfer_history() {
+            let mut contract = setup();
+            let accounts = default_accounts::<DefaultEnvironment>();
+            
+            // Make some transfers
+            assert!(contract.transfer(accounts.bob, 100).is_ok());
+            assert!(contract.transfer(accounts.charlie, 200).is_ok());
+            
+            // Check history for Alice
+            let history = contract.history(1, 10);
+            assert_eq!(history.len(), 2);
+            
+            // Verify first transfer details
+            let (from, to, value, _) = history[0];
+            assert_eq!(from, accounts.alice);
+            assert_eq!(to, accounts.bob);
+            assert_eq!(value, 100);
+        }
+
+        // Test history pagination
+        #[ink::test]
+        fn test_history_pagination() {
+            let mut contract = setup();
+            let accounts = default_accounts::<DefaultEnvironment>();
+            
+            // Make multiple transfers
+            for i in 0..5 {
+                assert!(contract.transfer(accounts.bob, 100 + i).is_ok());
+            }
+            
+            // Test first page
+            let page1 = contract.history(1, 2);
+            assert_eq!(page1.len(), 2);
+            
+            // Test second page
+            let page2 = contract.history(2, 2);
+            assert_eq!(page2.len(), 2);
+            
+            // Test last page
+            let page3 = contract.history(3, 2);
+            assert_eq!(page3.len(), 1);
+            
+            // Test invalid page
+            let invalid_page = contract.history(10, 2);
+            assert_eq!(invalid_page.len(), 0);
+        }
+
+        // Test maximum history size
+        #[ink::test]
+        fn test_max_history_size() {
+            let mut contract = setup();
+            let accounts = default_accounts::<DefaultEnvironment>();
+            set_caller::<DefaultEnvironment>(accounts.alice);
+            // Make more transfers than MAX_HISTORY_SIZE
+            for i in 0..200 {
+                assert!(contract.transfer(accounts.bob, 100 + i).is_ok());
+            }
+            
+            // Check that history is limited to MAX_HISTORY_SIZE
+            let history = contract.history(1, 100);
+            assert_eq!(history.len(), 100); // Assuming MAX_HISTORY_SIZE is 100
+        }
     }
 }
