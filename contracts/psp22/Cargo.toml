@@ -7,11 +7,9 @@ edition = "2021"
 [dependencies]
 ink = { version = "4.2.1", default-features = false }
 ink_prelude = { version = "~3.4.0", default-features = false }
-
+ink_storage = { version = "4.3.0", default-features = false }
 scale = { package = "parity-scale-codec", version = "3", default-features = false, features = ["derive"] }
 scale-info = { version = "2.6", default-features = false, features = ["derive"], optional = true }
-
-openbrush = { tag = "4.0.0-beta", git = "https://github.com/Brushfam/openbrush-contracts", default-features = false, features = ["psp22", "ownable", "reentrancy_guard"] }
 
 [lib]
 name = "pidchat_psp22"
@@ -23,7 +21,6 @@ std = [
     "ink/std",
     "scale/std",
     "scale-info/std",
-    "openbrush/std",
 ]
 ink-as-dependency = []
 
