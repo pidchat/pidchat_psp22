@@ -46,6 +46,9 @@ pub mod psp22 {
 
         #[ink(message)]
         fn burn(&mut self, from: DefaultAccountId, value: DefaultBalance) -> Result<(),PSP22Error>;
+
+        #[ink(message)]
+        fn history(&self, page: u32, limit: u32) -> Vec<(DefaultAccountId, DefaultAccountId, DefaultBalance, u64)>;
     }
 }
 #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
@@ -118,6 +121,34 @@ pub mod token {
             instance.transfers = Mapping::new();
             instance
         }
+         // Helper function to record transfers
+         fn record_transfer(&mut self, from: DefaultAccountId, to: DefaultAccountId, value: DefaultBalance) {
+            let timestamp = Self::env().block_timestamp();
+            
+            // Record transfer in sender's history
+            let transfer_from = (from, to, value, timestamp);
+            let mut transfers_from = self.transfers.get(&from).unwrap_or_default();
+            transfers_from.push(transfer_from);
+            self.transfers.insert(&from, &transfers_from);
+            
+            // Record transfer in recipient's history
+            let transfer_to = (from, to, value, timestamp);
+            let mut transfers_to = self.transfers.get(&to).unwrap_or_default();
+            transfers_to.push(transfer_to);
+            self.transfers.insert(&to, &transfers_to);
+        }
+
+        // Helper function to update balances
+        fn update_balances(&mut self, from: DefaultAccountId, to: DefaultAccountId, value: DefaultBalance) -> Result<(), PSP22Error> {
+            let from_balance = self.balances.get(&from).unwrap_or(0);
+            if from_balance < value {
+                return Err(PSP22Error::InsufficientBalance);
+            }
+            
+            self.balances.insert(&from, &(from_balance - value));
+            self.balances.insert(&to, &(self.balances.get(&to).unwrap_or(0) + value));
+            Ok(())
+        }
        
     }
 
@@ -153,56 +184,32 @@ pub mod token {
 
         #[ink(message)]
         fn transfer(&mut self, to: DefaultAccountId, value: DefaultBalance) -> Result<(), PSP22Error> {
-            //validate the transfer
             let caller = Self::env().caller();
-            let balance = self.balances.get(&caller).unwrap_or(0);
-           
-            if balance < value {
-                return Err(PSP22Error::InsufficientBalance);
-            }
-            //update the balances
-            self.balances.insert(&caller, &(balance - value));
-            self.balances.insert(&to, &(self.balances.get(&to).unwrap_or(0) + value));
-            //record the transfer from 
-            let transfer = (caller, to, value, Self::env().block_timestamp());
-            let mut transfers = self.transfers.get(&caller).unwrap_or_default();
-            transfers.push(transfer);
-            self.transfers.insert(&caller, &transfers);
-            //record the transfer to
-            let transfer = (caller, to, value, Self::env().block_timestamp());
-            let mut transfers = self.transfers.get(&to).unwrap_or_default();
-            transfers.push(transfer);
-            self.transfers.insert(&to, &transfers);
-
+            // Update balances using helper function
+            self.update_balances(caller, to, value)?;
+            // Record transfer using helper function
+            self.record_transfer(caller, to, value);
             Ok(())
         }
 
         #[ink(message)]
         fn transfer_from(&mut self, from: DefaultAccountId, to: DefaultAccountId, value: DefaultBalance) -> Result<(),PSP22Error> {
-            //validate the transfer
             let caller = Self::env().caller();
+            
+            // Check allowance
             let allowance = self.allowances.get(&(from, caller)).unwrap_or(0);
             if allowance < value {
                 return Err(PSP22Error::InsufficientAllowance);
             }
             
-            //update the balances
-            self.balances.insert(&from, &(self.balances.get(&from).unwrap_or(0) - value));
-            self.balances.insert(&to, &(self.balances.get(&to).unwrap_or(0) + value));
-            //remover allowance
-            self.allowances.remove(&(from, caller));    
-            //record the transfer from
-            let transfer = (from, caller, value, Self::env().block_timestamp());
-            let mut transfers = self.transfers.get(&from).unwrap_or_default();
-            transfers.push(transfer);
-            self.transfers.insert(&from, &transfers);
-            //record the transfer to
-            let transfer = (from, to, value, Self::env().block_timestamp());
-            let mut transfers = self.transfers.get(&to).unwrap_or_default();
-            transfers.push(transfer);
-            self.transfers.insert(&to, &transfers);
-
+            // Update balances using helper function
+            self.update_balances(from, to, value)?;
+            // Remove allowance after successful transfer
+            self.allowances.remove(&(from, caller));
+            // Record transfer using helper function
+            self.record_transfer(from, to, value);
             Ok(())
+             
         }
 
         #[ink(message)]
@@ -243,5 +250,27 @@ pub mod token {
             self.total_supply = self.total_supply - value;
             Ok(())
         }
+        #[ink(message)]
+        fn history(&self, page: u32, limit: u32) -> Vec<(DefaultAccountId, DefaultAccountId, DefaultBalance, u64)> {
+            let caller = self.env().caller();
+            let transfers = self.transfers.get(&caller).unwrap_or_default();
+            
+            // Validate pagination parameters
+            if page == 0 || limit == 0 {
+                return Vec::new();
+            }
+
+            // Calculate pagination indices with overflow protection
+            let start = ((page - 1) * limit) as usize;
+            if start >= transfers.len() {
+                return Vec::new();
+            }
+
+            let end = (start + limit as usize).min(transfers.len());
+            
+            // Return the requested slice of history
+            transfers[start..end].to_vec()
+        }
+        
     }
 }
